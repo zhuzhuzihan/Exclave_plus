@@ -53,6 +53,7 @@ import io.nekohasekai.sagernet.*
 import io.nekohasekai.sagernet.aidl.TrafficStats
 import io.nekohasekai.sagernet.bg.BaseService
 import io.nekohasekai.sagernet.bg.test.V2RayTestInstance
+import io.nekohasekai.sagernet.bg.test.SpeedTestHelper
 import io.nekohasekai.sagernet.database.*
 import io.nekohasekai.sagernet.databinding.LayoutProfileBinding
 import io.nekohasekai.sagernet.databinding.LayoutProfileListBinding
@@ -553,9 +554,10 @@ class ConfigurationFragment @JvmOverloads constructor(
                     val profiles = SagerDatabase.proxyDao.getByGroup(DataStore.currentGroupId())
                     val toClear = mutableListOf<ProxyEntity>()
                     if (profiles.isNotEmpty()) for (profile in profiles) {
-                        if (profile.status != 0) {
+                        if (profile.status != 0 || profile.speed != 0L) {
                             profile.status = 0
                             profile.ping = 0
+                            profile.speed = 0L
                             profile.error = null
                             toClear.add(profile)
                         }
@@ -667,6 +669,9 @@ class ConfigurationFragment @JvmOverloads constructor(
             }
             R.id.action_connection_url_test -> {
                 urlTest()
+            }
+            R.id.action_speed_test -> {
+                speedTest()
             }
             R.id.action_update_subscription -> {
                 runOnDefaultDispatcher {
@@ -794,6 +799,14 @@ class ConfigurationFragment @JvmOverloads constructor(
                 } else {
                     binding.content.setOnClickListener {}
                 }
+
+                if (profile.speed > 0L && (profile.status == 0 || profile.status == 1)) {
+                    binding.profileSpeed.isVisible = true
+                    binding.profileSpeed.text = SpeedTestHelper.formatSpeed(profile.speed)
+                    binding.profileSpeed.setTextColor(binding.profileStatus.currentTextColor)
+                } else {
+                    binding.profileSpeed.isGone = true
+                }
             }
         }
 
@@ -862,6 +875,98 @@ class ConfigurationFragment @JvmOverloads constructor(
                             }
                             profile.status = 1
                             profile.ping = result
+                        } catch (e: PluginManager.PluginNotFoundException) {
+                            profile.status = -1
+                            profile.error = e.readableMessage
+                        } catch (e: Exception) {
+                            profile.status = 3
+                            profile.error = e.readableMessage
+                        }
+                        onMainDispatcher {
+                            finishedProfileCount++
+                            test.binding.progressCircular.apply {
+                                isVisible = true
+                                setProgressCompat(
+                                    ((finishedProfileCount.toDouble() / profileCount.toDouble()) * 100).toInt(),
+                                    true
+                                )
+                            }
+                            // TODO: fix l10n
+                            dialog.getButton(DialogInterface.BUTTON_NEUTRAL).text = "$finishedProfileCount/$profileCount"
+                        }
+
+                        test.update(profile)
+                        ProfileManager.updateProfile(profile)
+                    }
+                })
+            }
+
+            testJobs.joinAll()
+            test.close()
+            onMainDispatcher {
+                test.binding.progressCircular.isGone = true
+                dialog.getButton(DialogInterface.BUTTON_NEGATIVE).setText(android.R.string.ok)
+            }
+        }
+        test.cancel = {
+            mainJob.cancel()
+            runOnDefaultDispatcher {
+                GroupManager.postReload(DataStore.currentGroupId())
+            }
+        }
+    }
+
+    @Suppress("EXPERIMENTAL_API_USAGE")
+    fun speedTest() {
+        val test = TestDialog()
+        val dialog = test.builder.show()
+        dialog.getButton(DialogInterface.BUTTON_NEUTRAL).isEnabled = false
+        val testJobs = mutableListOf<Job>()
+
+        val mainJob = runOnDefaultDispatcher {
+            val group = DataStore.currentGroup()
+            var profilesUnfiltered = SagerDatabase.proxyDao.getByGroup(group.id)
+            profilesUnfiltered = profilesUnfiltered.filter {
+                !it.useBrowserForwarder()
+            }
+            val profiles = ConcurrentLinkedQueue(profilesUnfiltered)
+
+            val profileCount = profilesUnfiltered.size
+            var finishedProfileCount = 0
+            //stopService()
+
+            val link = DataStore.connectionTestURL
+            val timeout = 5000
+            val speedURL = DataStore.speedTestURL
+
+            // Downloads saturate bandwidth, so keep concurrency low for meaningful
+            // results. V2RayN runs speed tests strictly one at a time.
+            repeat(2) {
+                testJobs.add(launch {
+                    while (isActive) {
+                        val profile = profiles.poll() ?: break
+                        profile.status = 0
+                        profile.speed = 0L
+                        test.insert(profile)
+
+                        try {
+                            val socksPort = mkPort()
+                            val instance = if (DataStore.tunImplementation == TunImplementation.SYSTEM && DataStore.serviceMode == Key.MODE_VPN && SagerNet.started && DataStore.startedProfile > 0) {
+                                V2RayTestInstance(profile, link, timeout, protectPath = SagerNet.deviceStorage.noBackupFilesDir.toString() + "/protect_path", speedTestSocksPort = socksPort)
+                            } else {
+                                V2RayTestInstance(profile, link, timeout, speedTestSocksPort = socksPort)
+                            }
+                            val speed = instance.use {
+                                // Latency first; skip the download when unreachable (mirrors V2RayN).
+                                profile.ping = it.doTest()
+                                test.update(profile)
+                                it.doSpeedTest(speedURL) { current ->
+                                    profile.speed = current
+                                    test.update(profile)
+                                }
+                            }
+                            profile.status = 1
+                            profile.speed = speed
                         } catch (e: PluginManager.PluginNotFoundException) {
                             profile.status = -1
                             profile.error = e.readableMessage
@@ -1542,6 +1647,7 @@ class ConfigurationFragment @JvmOverloads constructor(
             val profileType: TextView = view.findViewById(R.id.profile_type)
             val profileAddress: TextView = view.findViewById(R.id.profile_address)
             val profileStatus: TextView = view.findViewById(R.id.profile_status)
+            val profileSpeed: TextView = view.findViewById(R.id.profile_speed)
 
             val trafficText: TextView = view.findViewById(R.id.traffic_text)
             val selectedView: LinearLayout = view.findViewById(R.id.selected_view)
@@ -1639,6 +1745,14 @@ class ConfigurationFragment @JvmOverloads constructor(
                     if (proxyEntity.status == 2) {
                         profileStatus.text = proxyEntity.error
                     }
+                }
+
+                if (proxyEntity.status == 1 && proxyEntity.speed > 0L) {
+                    profileSpeed.isVisible = true
+                    profileSpeed.text = SpeedTestHelper.formatSpeed(proxyEntity.speed)
+                    profileSpeed.setTextColor(requireContext().getColour(R.color.material_green_500))
+                } else {
+                    profileSpeed.isGone = true
                 }
 
                 if (proxyEntity.status == 3) {

@@ -167,10 +167,10 @@ class V2rayBuildResult(
 
 @OptIn(ExperimentalUuidApi::class)
 fun buildV2RayConfig(
-    proxy: ProxyEntity, forTest: Boolean = false, forExport: Boolean = false
+    proxy: ProxyEntity, forTest: Boolean = false, forExport: Boolean = false, speedTestSocksPort: Int = 0
 ): V2rayBuildResult {
     if (proxy.type == ProxyEntity.TYPE_CONFIG && proxy.configBean!!.type == "v2ray") {
-        return buildCustomConfig(proxy, forTest, forExport)
+        return buildCustomConfig(proxy, forTest, forExport, speedTestSocksPort)
     }
 
     val outboundTags = ArrayList<String>()
@@ -500,6 +500,21 @@ fun buildV2RayConfig(
                     })
                 }
             }
+        }
+
+        // Local SOCKS inbound for speed test (mirrors V2RayN: download a test file through
+        // a per-node SOCKS inbound and measure throughput). Only used by V2RayTestInstance.
+        if (speedTestSocksPort > 0) {
+            inbounds.add(InboundObject().apply {
+                tag = TAG_SOCKS
+                listen = LOCALHOST
+                port = speedTestSocksPort
+                protocol = "socks"
+                settings = LazyInboundConfigurationObject(this, SocksInboundConfigurationObject().apply {
+                    auth = "noauth"
+                    udp = false
+                })
+            })
         }
 
         outbounds = mutableListOf()
@@ -2368,6 +2383,15 @@ fun buildV2RayConfig(
             })
         }
 
+        // Route the speed test SOCKS inbound to the tested proxy.
+        if (speedTestSocksPort > 0) {
+            routing.rules.add(0, RoutingObject.RuleObject().apply {
+                type = "field"
+                inboundTag = listOf(TAG_SOCKS)
+                outboundTag = tagProxy
+            })
+        }
+
         if (requireWs) {
             browserForwarder = BrowserForwarderObject().apply {
                 listenAddr = LOCALHOST
@@ -2820,7 +2844,7 @@ fun buildV2RayConfig(
 
 }
 
-fun buildCustomConfig(proxy: ProxyEntity, forTest: Boolean = false, forExport: Boolean = false): V2rayBuildResult {
+fun buildCustomConfig(proxy: ProxyEntity, forTest: Boolean = false, forExport: Boolean = false, speedTestSocksPort: Int = 0): V2rayBuildResult {
     val bean = proxy.configBean!!
     val config = parseJson(bean.content, lenient = true).asJsonObject
 
@@ -2935,6 +2959,19 @@ fun buildCustomConfig(proxy: ProxyEntity, forTest: Boolean = false, forExport: B
         })
     }
 
+    if (speedTestSocksPort > 0) {
+        inbounds.add(InboundObject().apply {
+            tag = TAG_SOCKS
+            listen = LOCALHOST
+            port = speedTestSocksPort
+            protocol = "socks"
+            settings = LazyInboundConfigurationObject(this, SocksInboundConfigurationObject().apply {
+                auth = "noauth"
+                udp = false
+            })
+        })
+    }
+
     val outbounds = config.getArray("outbounds")?.map {
         gson.fromJson(it.toString(), OutboundObject::class.java)
     }?.toMutableList()
@@ -2978,6 +3015,27 @@ fun buildCustomConfig(proxy: ProxyEntity, forTest: Boolean = false, forExport: B
         inboundArray.add(parseJson(gson.toJson(inbound), lenient = true))
     }
     config.add("inbounds", inboundArray)
+    if (speedTestSocksPort > 0) {
+        // Route the speed test SOCKS inbound to the first outbound (the tested proxy).
+        val targetTag = outboundTags.firstOrNull()?.takeIf { it.isNotEmpty() } ?: TAG_AGENT
+        val rule = parseJson(gson.toJson(RoutingObject.RuleObject().apply {
+            type = "field"
+            inboundTag = listOf(TAG_SOCKS)
+            outboundTag = targetTag
+        }), lenient = true).asJsonObject
+        val routingKey = config.keySet().find { it.equals("routing", ignoreCase = true) }
+        val routingObj = if (routingKey != null) {
+            config.getAsJsonObject(routingKey)
+        } else {
+            JsonObject().also { config.add("routing", it) }
+        }
+        val rulesKey = routingObj.keySet().find { it.equals("rules", ignoreCase = true) }
+        val oldRules = if (rulesKey != null) routingObj.getAsJsonArray(rulesKey) else null
+        val newRules = JsonArray()
+        newRules.add(rule)
+        oldRules?.forEach { newRules.add(it) }
+        routingObj.add(rulesKey ?: "rules", newRules)
+    }
     if (flushOutbounds) {
         outbounds!!.forEach { it.init() }
         val outboundArray = JsonArray(outbounds.size)

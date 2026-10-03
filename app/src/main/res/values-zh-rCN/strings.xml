@@ -244,6 +244,8 @@
     <string name="clear_traffic_statistics">清空流量统计数据</string>
     <string name="connection_test">连接测试</string>
     <string name="connection_test_clear_results">清理测试结果</string>
+    <string name="speed_test">测速</string>
+    <string name="speed_test_url">测速 URL</string>
     <string name="connection_test_domain_not_found">域名不存在</string>
     <string name="connection_test_refused">连接重置</string>
     <string name="connection_test_timeout">超时</string>

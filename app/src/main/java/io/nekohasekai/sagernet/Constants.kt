@@ -21,6 +21,10 @@ package io.nekohasekai.sagernet
 
 const val CONNECTION_TEST_URL = "https://www.google.com/generate_204"
 
+// Default speed test file (V2RayN uses Cachefly/Cloudflare test files as well).
+// Note: the Cloudflare 100MB URL returns 403 without a Referer header, so default to 10MB.
+const val SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=10000000"
+
 object Key {
 
     const val DB_PUBLIC = "configuration.db"
@@ -86,6 +90,7 @@ object Key {
     const val TRANSPROXY_PORT = "transproxyPort"
 
     const val CONNECTION_TEST_URL = "connectionTestURL"
+    const val SPEED_TEST_URL = "speedTestURL"
     const val PROBE_URL = "probeUrl"
     const val PROBE_INTERVAL = "probeInterval"
 

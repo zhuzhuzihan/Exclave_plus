@@ -30,12 +30,14 @@ import io.nekohasekai.sagernet.ktx.runOnDefaultDispatcher
 import io.nekohasekai.sagernet.ktx.tryResume
 import io.nekohasekai.sagernet.ktx.tryResumeWithException
 import io.nekohasekai.sagernet.utils.DefaultNetworkListener
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import libexclavecore.Libexclavecore
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.suspendCoroutine
 
-class V2RayTestInstance(profile: ProxyEntity, val link: String, val timeout: Int, val protectPath: String = "") : V2RayInstance(
+class V2RayTestInstance(profile: ProxyEntity, val link: String, val timeout: Int, val protectPath: String = "", val speedTestSocksPort: Int = 0) : V2RayInstance(
     profile,
 ), LocalResolver {
     lateinit var continuation: Continuation<Int>
@@ -54,6 +56,40 @@ class V2RayTestInstance(profile: ProxyEntity, val link: String, val timeout: Int
                         delay(500L)
                     }
                     c.tryResume(Libexclavecore.urlTest(v2rayPoint, "", link, timeout))
+                } catch (e: Exception) {
+                    c.tryResumeWithException(e)
+                }
+            }
+        }
+    }
+
+    /**
+     * Speed test: download [url] through the local SOCKS inbound
+     * ([speedTestSocksPort], must be > 0) and return peak bytes/sec.
+     * Mirrors V2RayN (DoSpeedTest): latency is expected to be measured first
+     * via [doTest]; callers skip the download when the node is unreachable.
+     */
+    suspend fun doSpeedTest(
+        url: String,
+        timeoutMs: Long = SpeedTestHelper.DEFAULT_TIMEOUT_MS,
+        onProgress: ((bytesPerSec: Long) -> Unit)? = null,
+    ): Long {
+        return suspendCoroutine { c ->
+            processes = GuardedProcessPool {
+                Logs.w(it)
+                c.tryResumeWithException(it)
+            }
+            runOnDefaultDispatcher {
+                try {
+                    init()
+                    launch()
+                    if (pluginConfigs.isNotEmpty()) {
+                        delay(500L)
+                    }
+                    val speed = withContext(Dispatchers.IO) {
+                        SpeedTestHelper.download(url, speedTestSocksPort, timeoutMs, onProgress)
+                    }
+                    c.tryResume(speed)
                 } catch (e: Exception) {
                     c.tryResumeWithException(e)
                 }
@@ -81,6 +117,6 @@ class V2RayTestInstance(profile: ProxyEntity, val link: String, val timeout: Int
     }
 
     override fun buildConfig() {
-        config = buildV2RayConfig(profile, forTest = true)
+        config = buildV2RayConfig(profile, forTest = true, speedTestSocksPort = speedTestSocksPort)
     }
 }
